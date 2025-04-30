@@ -1,8 +1,3 @@
-Absolutely! Here's the full `README.md` content for you to **copy and paste directly** into your project:
-
----
-
-```markdown
 # 🌇 AI-Powered Urban Heat Island Detection and Mitigation System
 
 ### A Vision-Language and ML-Driven System to Detect and Mitigate Urban Heat Island (UHI) Effects Using Environmental Metadata
