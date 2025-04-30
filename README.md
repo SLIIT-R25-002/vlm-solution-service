@@ -29,8 +29,6 @@ How can AI-driven Vision-Language Models (VLMs) combined with environmental data
 | Model Training & Inference     | `scikit-learn`, `pandas`, `NumPy`, `StandardScaler`, `LogisticRegression`     |
 | Backend API                    | `Flask`, `Flask-CORS`, `joblib`                                               |
 | Frontend UI                    | `React`, `React-Bootstrap`, `Axios`                                           |
-| Prompt-Based Recommendation    | [BLIP-2 / Vision-Language Models](https://huggingface.co/Salesforce/blip2)   |
-
 
 ---
 
