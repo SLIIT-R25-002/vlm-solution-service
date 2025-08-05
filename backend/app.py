@@ -3,7 +3,6 @@ from flask_cors import CORS
 import numpy as np
 import joblib
 import os
-import time
 import base64
 import google.generativeai as genai
 from dotenv import load_dotenv
@@ -11,7 +10,6 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Flask app setup
 app = Flask(__name__)
 CORS(app)
 
@@ -24,13 +22,13 @@ if not os.path.exists(MODEL_PATH) or not os.path.exists(SCALER_PATH):
 
 model = joblib.load(MODEL_PATH)
 scaler = joblib.load(SCALER_PATH)
-
 print("[INFO] Model and Scaler loaded successfully.")
 
-# Gemini setup
+# Configure Gemini
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
     raise EnvironmentError("GEMINI_API_KEY is not set in .env")
+
 genai.configure(api_key=GEMINI_API_KEY)
 gemini_model = genai.GenerativeModel("gemini-1.5-flash")
 
@@ -41,7 +39,7 @@ MATERIAL_MAPPING = {
     "water": 10, "artificial turf": 11, "glass": 12
 }
 
-# 🔹 /predict endpoint
+# ---------------------------- /predict ----------------------------
 @app.route('/predict', methods=['POST'])
 def predict_heat_island():
     try:
@@ -59,11 +57,11 @@ def predict_heat_island():
         if not processed:
             return jsonify({"error": "No valid materials found"}), 400
 
-        # Run prediction
+        # Predict
         scaled = scaler.transform(processed)
         preds = model.predict(scaled)
 
-        # Calculate stats
+        # Stats
         total_area = sum(x[4] for x in data)
         heat_area = sum(x[4] for x in data if x[1] in ["asphalt", "concrete", "metal", "steel", "solar panel", "rubber", "plastic", "glass"])
         veg_area = sum(x[4] for x in data if x[1] in ["grass", "soil", "artificial turf"])
@@ -72,10 +70,9 @@ def predict_heat_island():
         heat_retaining_percent = (heat_area / total_area) * 100
         vegetation_percent = (veg_area / total_area) * 100
 
-        # Decide heat island by majority vote
         is_heat_island = int(sum(preds) > len(preds) / 2)
 
-        return jsonify({
+        response_data = {
             "is_heat_island": bool(is_heat_island),
             "avg_temperature": round(avg_temp, 1),
             "avg_humidity": round(avg_humidity, 1),
@@ -91,11 +88,16 @@ def predict_heat_island():
                     "heat_island": "Yes" if preds[i] == 1 else "No"
                 } for i, x in enumerate(data)
             ]
-        })
+        }
+
+        print("[LOG] Prediction Result:", response_data)  # ✅ Console log
+        return jsonify(response_data)
+
     except Exception as e:
+        print("[ERROR] /predict exception:", str(e))  # ❌ Error log
         return jsonify({"error": str(e)}), 500
 
-# 🔹 /recommend endpoint
+# ---------------------------- /recommend ----------------------------
 @app.route('/recommend', methods=['POST'])
 def recommend():
     try:
@@ -114,6 +116,7 @@ def recommend():
         heat_retaining_percent = (heat_area / total_area) * 100
         vegetation_percent = (veg_area / total_area) * 100
 
+        # Build prompt
         prompt = (
             "You are an expert AI assistant specializing in sustainable urban planning.\n\n"
             "Analyze the following metadata and city image to recommend strategies to reduce Urban Heat Island (UHI) effects:\n"
@@ -137,12 +140,14 @@ def recommend():
         image_part = {"mime_type": "image/jpeg", "data": image_bytes}
 
         response = gemini_model.generate_content([prompt, image_part])
+        print("[LOG] Gemini Recommendation:\n", response.text)  # ✅ Console log
         return jsonify({"gemini_recommendation": response.text})
 
     except Exception as e:
+        print("[ERROR] /recommend exception:", str(e))  # ❌ Error log
         return jsonify({"error": str(e)}), 500
 
-# 🔹 Run app
+# ---------------------------- Run App ----------------------------
 if __name__ == '__main__':
-    print("[INFO] Starting server on port 5000...")
+    print("[INFO] Starting Flask server at http://localhost:5000 ...")
     app.run(debug=True, port=5000)
