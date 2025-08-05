@@ -4,126 +4,115 @@ import numpy as np
 import joblib
 import os
 import time
+import base64
+import google.generativeai as genai
+from dotenv import load_dotenv
 
+# Load environment variables
+load_dotenv()
+
+# Flask app setup
 app = Flask(__name__)
 CORS(app)
 
+# Load model and scaler
 MODEL_PATH = "heat_island_model.pkl"
 SCALER_PATH = "scaler.pkl"
 
-if not (os.path.exists(MODEL_PATH) and os.path.exists(SCALER_PATH)):
-    raise FileNotFoundError("Model or scaler files not found!")
+if not os.path.exists(MODEL_PATH) or not os.path.exists(SCALER_PATH):
+    raise FileNotFoundError("Model or scaler file not found!")
 
 model = joblib.load(MODEL_PATH)
 scaler = joblib.load(SCALER_PATH)
 
 print("[INFO] Model and Scaler loaded successfully.")
 
+# Gemini setup
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if not GEMINI_API_KEY:
+    raise EnvironmentError("GEMINI_API_KEY is not set in .env")
+genai.configure(api_key=GEMINI_API_KEY)
+gemini_model = genai.GenerativeModel("gemini-1.5-flash")
+
+# Material mapping
 MATERIAL_MAPPING = {
     "asphalt": 0, "concrete": 1, "grass": 2, "metal": 3, "plastic": 4,
     "rubber": 5, "sand": 6, "soil": 7, "solar panel": 8, "steel": 9,
     "water": 10, "artificial turf": 11, "glass": 12
 }
 
+# 🔹 /predict endpoint
 @app.route('/predict', methods=['POST'])
 def predict_heat_island():
     try:
-        print("[INFO] /predict endpoint hit")
-
         data = request.json.get('data', [])
         if not data:
             return jsonify({"error": "No data provided"}), 400
 
-        processed_data = []
+        processed = []
         for item in data:
             material = item[1]
             if material in MATERIAL_MAPPING:
-                processed_data.append([
-                    MATERIAL_MAPPING[material],
-                    item[2], item[3], item[4]
+                processed.append([
+                    MATERIAL_MAPPING[material], item[2], item[3], item[4]
                 ])
+        if not processed:
+            return jsonify({"error": "No valid materials found"}), 400
 
-        if not processed_data:
-            return jsonify({"error": "No valid data to process"}), 400
+        # Run prediction
+        scaled = scaler.transform(processed)
+        preds = model.predict(scaled)
 
-        processed_data_scaled = scaler.transform(processed_data)
-        predictions = model.predict(processed_data_scaled)
+        # Calculate stats
+        total_area = sum(x[4] for x in data)
+        heat_area = sum(x[4] for x in data if x[1] in ["asphalt", "concrete", "metal", "steel", "solar panel", "rubber", "plastic", "glass"])
+        veg_area = sum(x[4] for x in data if x[1] in ["grass", "soil", "artificial turf"])
+        avg_temp = np.mean([x[2] for x in data])
+        avg_humidity = np.mean([x[3] for x in data])
+        heat_retaining_percent = (heat_area / total_area) * 100
+        vegetation_percent = (veg_area / total_area) * 100
 
-        total_area = sum(item[4] for item in data)
-        heat_retaining_area = sum(
-            item[4] for item in data if item[1] in ["asphalt", "concrete", "metal", "steel", "solar panel", "rubber", "plastic", "glass"]
-        )
-        vegetation_area = sum(
-            item[4] for item in data if item[1] in ["grass", "soil", "artificial turf"]
-        )
-
-        avg_temp = np.mean([item[2] for item in data])
-        avg_humidity = np.mean([item[3] for item in data])
-
-        heat_retaining_percent = (heat_retaining_area / total_area) * 100
-        vegetation_percent = (vegetation_area / total_area) * 100
-
-        is_heat_island = (
-            avg_temp > 33 and
-            heat_retaining_percent > 60 and
-            vegetation_percent < 20 and
-            avg_humidity < 45
-        )
+        # Decide heat island by majority vote
+        is_heat_island = int(sum(preds) > len(preds) / 2)
 
         return jsonify({
-            "summary": {
-                "heat_retaining_percent": round(heat_retaining_percent, 2),
-                "vegetation_percent": round(vegetation_percent, 2),
-                "avg_temperature": round(avg_temp, 1),
-                "avg_humidity": round(avg_humidity, 1),
-                "final_decision": "Heat Island Detected" if is_heat_island else "No Heat Island Detected",
-                "is_heat_island": "true" if is_heat_island else "false"
-            }
+            "is_heat_island": bool(is_heat_island),
+            "avg_temperature": round(avg_temp, 1),
+            "avg_humidity": round(avg_humidity, 1),
+            "heat_retaining_percent": round(heat_retaining_percent, 2),
+            "vegetation_percent": round(vegetation_percent, 2),
+            "detailed_predictions": [
+                {
+                    "location": x[0],
+                    "material": x[1],
+                    "temperature": x[2],
+                    "humidity": x[3],
+                    "area": x[4],
+                    "heat_island": "Yes" if preds[i] == 1 else "No"
+                } for i, x in enumerate(data)
+            ]
         })
-
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
-import base64
-import google.generativeai as genai  # ensure you have gemini installed
-from dotenv import load_dotenv
-
-load_dotenv()
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
-if not GEMINI_API_KEY:
-    raise EnvironmentError("GEMINI_API_KEY not set in .env")
-
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-pro-vision")
-
+# 🔹 /recommend endpoint
 @app.route('/recommend', methods=['POST'])
-def recommend_strategies():
+def recommend():
     try:
-        print("[INFO] /recommend endpoint hit")
-
         json_data = request.get_json()
-        data = json_data.get('data', [])
-        image_base64 = json_data.get('image_base64', '')
+        data = json_data.get("data", [])
+        image_b64 = json_data.get("image_base64", "")
 
-        if not data or not image_base64:
-            return jsonify({"error": "Missing data or image_base64"}), 400
+        if not data or not image_b64:
+            return jsonify({"error": "Missing data or image"}), 400
 
-        # Extract metrics for prompt
-        avg_temp = np.mean([item[2] for item in data])
-        avg_humidity = np.mean([item[3] for item in data])
-        total_area = sum(item[4] for item in data)
-
-        heat_retaining_area = sum(
-            item[4] for item in data if item[1] in ["asphalt", "concrete", "metal", "steel", "solar panel", "rubber", "plastic", "glass"]
-        )
-        vegetation_area = sum(
-            item[4] for item in data if item[1] in ["grass", "soil", "artificial turf"]
-        )
-
-        heat_retaining_percent = (heat_retaining_area / total_area) * 100
-        vegetation_percent = (vegetation_area / total_area) * 100
+        total_area = sum(x[4] for x in data)
+        heat_area = sum(x[4] for x in data if x[1] in ["asphalt", "concrete", "metal", "steel", "solar panel", "rubber", "plastic", "glass"])
+        veg_area = sum(x[4] for x in data if x[1] in ["grass", "soil", "artificial turf"])
+        avg_temp = np.mean([x[2] for x in data])
+        avg_humidity = np.mean([x[3] for x in data])
+        heat_retaining_percent = (heat_area / total_area) * 100
+        vegetation_percent = (veg_area / total_area) * 100
 
         prompt = (
             "You are an expert AI assistant specializing in sustainable urban planning.\n\n"
@@ -144,23 +133,16 @@ def recommend_strategies():
             "3. [Action and explanation]"
         )
 
-        image_bytes = base64.b64decode(image_base64)
-        image_part = {
-            "mime_type": "image/jpeg",
-            "data": image_bytes
-        }
+        image_bytes = base64.b64decode(image_b64)
+        image_part = {"mime_type": "image/jpeg", "data": image_bytes}
 
-        response = model.generate_content([prompt, image_part])
-        reply = response.text
-
-        return jsonify({"gemini_recommendation": reply})
+        response = gemini_model.generate_content([prompt, image_part])
+        return jsonify({"gemini_recommendation": response.text})
 
     except Exception as e:
-        print(f"[ERROR] /recommend failed: {e}")
         return jsonify({"error": str(e)}), 500
 
-
-
+# 🔹 Run app
 if __name__ == '__main__':
-    print("[INFO] Starting Flask server on port 5000...")
+    print("[INFO] Starting server on port 5000...")
     app.run(debug=True, port=5000)
