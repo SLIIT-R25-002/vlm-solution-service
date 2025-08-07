@@ -147,6 +147,27 @@ def recommend():
         print("[ERROR] /recommend exception:", str(e))  # ❌ Error log
         return jsonify({"error": str(e)}), 500
 
+# ---------------------------- Health Check ----------------------------
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint for container orchestration"""
+    try:
+        # Basic health checks
+        health_status = {
+            "status": "healthy",
+            "service": "vlm-solution-service",
+            "model_loaded": model is not None,
+            "scaler_loaded": scaler is not None,
+            "gemini_configured": GEMINI_API_KEY is not None
+        }
+        return jsonify(health_status), 200
+    except Exception as e:
+        return jsonify({
+            "status": "unhealthy",
+            "service": "vlm-solution-service",
+            "error": str(e)
+        }), 500
+
 # ---------------------------- Run App ----------------------------
 if __name__ == '__main__':
     print("[INFO] Starting Flask server at http://localhost:5000 ...")
