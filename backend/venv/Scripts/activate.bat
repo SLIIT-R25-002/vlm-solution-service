@@ -8,7 +8,7 @@ if defined _OLD_CODEPAGE (
     "%SystemRoot%\System32\chcp.com" 65001 > nul
 )
 
-set VIRTUAL_ENV=C:\Y4S1\Heat_Island\backend\venv
+set VIRTUAL_ENV=C:\Y4 S2\HeatScape\vlm-solution-service\backend\venv
 
 if not defined PROMPT set PROMPT=$P$G
 

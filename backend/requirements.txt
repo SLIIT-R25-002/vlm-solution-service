@@ -1,8 +1,9 @@
 flask
 flask-cors
-numpy
-scikit-learn
+numpy==1.26.*
+scikit-learn==1.6.1
 joblib
 gunicorn
 google-generativeai
 python-dotenv
+

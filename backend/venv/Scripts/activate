@@ -35,7 +35,7 @@ deactivate () {
 # unset irrelevant variables
 deactivate nondestructive
 
-VIRTUAL_ENV="C:\Y4S1\Heat_Island\backend\venv"
+VIRTUAL_ENV="C:\Y4 S2\HeatScape\vlm-solution-service\backend\venv"
 export VIRTUAL_ENV
 
 _OLD_VIRTUAL_PATH="$PATH"
