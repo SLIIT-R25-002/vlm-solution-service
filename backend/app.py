@@ -401,5 +401,5 @@ def recommend_chat():
 
 # ---------------------- Start Server ----------------------
 if __name__ == '__main__':
-    print("[INFO] Starting Flask server at http://localhost:5000 ...")
-    app.run(host="0.0.0.0", debug=True, port=5000)  # set debug=False in prod
+    print("[INFO] Starting Flask server at http://localhost:5002 ...")
+    app.run(host="0.0.0.0", debug=True, port=5002)  # set debug=False in prod
