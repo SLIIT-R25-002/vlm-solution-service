@@ -141,8 +141,8 @@ def format_segments_for_prompt(segments):
     return "\n".join(lines)
 
 # ---------------------- Routes ----------------------
-@app.route('/healthz', methods=['GET'])
-def healthz():
+@app.route('/health', methods=['GET'])
+def health():
     return jsonify(status="ok"), 200
 
 @app.route('/predict', methods=['POST'])
