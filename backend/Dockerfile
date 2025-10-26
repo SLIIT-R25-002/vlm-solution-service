@@ -25,6 +25,7 @@ EXPOSE 5000
 
 # Set environment variables
 ENV FLASK_APP=app.py
+ENV GEMINI_API_KEY=AIzaSyC6fX9saxAV_vQY3pOCtYi4DyCBBx9RPj0
 ENV PYTHONUNBUFFERED=1
 
 # Run the application
