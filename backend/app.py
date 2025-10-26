@@ -141,7 +141,7 @@ def format_segments_for_prompt(segments):
     return "\n".join(lines)
 
 # ---------------------- Routes ----------------------
-@app.route('/api/vlm/health', methods=['GET'])
+@app.route('/api/health', methods=['GET'])
 def health():
     return jsonify(status="ok"), 200
 
