@@ -1,12 +1,17 @@
 {
     "compatibilities": [
-        "EC2",
-        "MANAGED_INSTANCES"
+        "EC2"
     ],
     "containerDefinitions": [
         {
             "cpu": 1024,
             "environment": [],
+            "secrets": [
+                {
+                    "name": "GEMINI_API_KEY",
+                    "valueFrom": "arn:aws:secretsmanager:eu-north-1:597088026916:secret:heatscape/vlm/prod/gemini"
+                }
+            ],
             "environmentFiles": [],
             "essential": true,
             "image": "597088026916.dkr.ecr.eu-north-1.amazonaws.com/vlm-solution-service:latest",
