@@ -38,7 +38,7 @@ if not GEMINI_API_KEY:
     raise EnvironmentError("GEMINI_API_KEY is not set in .env")
 
 genai.configure(api_key=GEMINI_API_KEY)
-gemini_model = genai.GenerativeModel("gemini-1.5-flash")
+gemini_model = genai.GenerativeModel("gemini-2.5-flash")
 
 # ---- Materials ----
 material_mapping = {
