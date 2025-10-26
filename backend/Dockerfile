@@ -26,6 +26,7 @@ EXPOSE 5000
 # Set environment variables
 ENV FLASK_APP=app.py
 ENV GEMINI_API_KEY=AIzaSyC6fX9saxAV_vQY3pOCtYi4DyCBBx9RPj0
+ENV CORS_ORIGINS=HeatScapeLoadBalancer-1347254234.eu-north-1.elb.amazonaws.com
 ENV PYTHONUNBUFFERED=1
 
 # Run the application
