@@ -141,11 +141,11 @@ def format_segments_for_prompt(segments):
     return "\n".join(lines)
 
 # ---------------------- Routes ----------------------
-@app.route('/health', methods=['GET'])
+@app.route('/api/vlm/health', methods=['GET'])
 def health():
     return jsonify(status="ok"), 200
 
-@app.route('/predict', methods=['POST'])
+@app.route('/api/vlm/predict', methods=['POST'])
 def predict_heat_island():
     try:
         payload = request.get_json(force=True, silent=False)
@@ -194,7 +194,7 @@ def predict_heat_island():
         print("[ERROR] /predict exception:", str(e))
         return jsonify({"error": str(e)}), 500
 
-@app.route('/recommend', methods=['POST'])
+@app.route('/api/vlm/recommend', methods=['POST'])
 def recommend():
     try:
         json_data = request.get_json(force=True, silent=False)
@@ -298,11 +298,11 @@ def recommend():
         })
 
     except Exception as e:
-        print("[ERROR] /recommend exception:", str(e))
+        print("[ERROR] /api/vlm/recommend exception:", str(e))
         return jsonify({"error": str(e)}), 500
 
 # ---------------------- ANSWER-ONLY follow-up chat ----------------------
-@app.route('/recommend/chat', methods=['POST', 'OPTIONS'])
+@app.route('/api/vlm/recommend/chat', methods=['POST', 'OPTIONS'])
 def recommend_chat():
     # CORS preflight
     if request.method == "OPTIONS":
@@ -350,7 +350,7 @@ def recommend_chat():
                 r.raise_for_status()
                 image_bytes = r.content
             except Exception as e:
-                print(f"[WARN] /recommend/chat image fetch failed: {e}")
+                print(f"[WARN] /api/vlm/recommend/chat image fetch failed: {e}")
                 image_bytes = None
 
         if image_mime not in ("image/jpeg", "image/png", "image/webp"):
@@ -396,7 +396,7 @@ def recommend_chat():
         return jsonify({"reply": reply}), 200
 
     except Exception as e:
-        print("[ERROR] /recommend/chat exception:", str(e))
+        print("[ERROR] /api/vlm/recommend/chat exception:", str(e))
         return jsonify({"error": str(e)}), 500
 
 # ---------------------- Start Server ----------------------
