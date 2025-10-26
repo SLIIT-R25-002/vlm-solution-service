@@ -145,8 +145,15 @@ def format_segments_for_prompt(segments):
 def health():
     return jsonify(status="ok"), 200
 
-@app.route('/api/vlm/predict', methods=['POST'])
+@app.route('/api/vlm/predict', methods=['POST', 'OPTIONS'])
 def predict_heat_island():
+    # Handle CORS preflight explicitly to ensure the load-balancer / proxy
+    # returns an HTTP-ok response for OPTIONS requests. Returning 204 here
+    # prevents browsers from blocking the following POST due to a failing
+    # preflight when intermediaries don't forward OPTIONS correctly.
+    if request.method == 'OPTIONS':
+        return ('', 204)
+
     try:
         payload = request.get_json(force=True, silent=False)
         segments = payload.get("segments", [])
@@ -194,8 +201,12 @@ def predict_heat_island():
         print("[ERROR] /predict exception:", str(e))
         return jsonify({"error": str(e)}), 500
 
-@app.route('/api/vlm/recommend', methods=['POST'])
+@app.route('/api/vlm/recommend', methods=['POST', 'OPTIONS'])
 def recommend():
+    # Support OPTIONS preflight explicitly for the recommend endpoint as well.
+    if request.method == 'OPTIONS':
+        return ('', 204)
+
     try:
         json_data = request.get_json(force=True, silent=False)
         segments = json_data.get("segments", [])
