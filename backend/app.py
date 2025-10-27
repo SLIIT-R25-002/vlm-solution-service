@@ -14,13 +14,18 @@ from dotenv import load_dotenv
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app)
-# In production, restrict origins via CORS_ORIGINS="https://your-frontend"
-# CORS(app, resources={r"/*": {
-#     "origins": os.getenv("CORS_ORIGINS", "*"),
-#     "methods": ["GET", "POST", "OPTIONS"],
-#     "allow_headers": ["Content-Type", "Authorization"],
-# }})
+CORS(app, resources={r"/*": {
+    "origins": [
+        "http://localhost:3000",  
+        "http://heatscapeapp.pixelcore.lk/", 
+        os.getenv("CORS_ORIGINS", "*")  
+    ],
+    "methods": ["GET", "POST", "OPTIONS"],
+    "allow_headers": ["Content-Type", "Authorization"],
+    "expose_headers": ["Content-Type"],
+    "supports_credentials": True,
+    "max_age": 600  
+}})
 
 # ---- Model & Scaler ----
 MODEL_PATH = "heat_island_model.pkl"
@@ -195,8 +200,12 @@ def predict_heat_island():
         print("[ERROR] /predict exception:", str(e))
         return jsonify({"error": str(e)}), 500
 
-@app.route('/api/vlm/recommend', methods=['POST'])
+@app.route('/api/vlm/recommend', methods=['POST', 'OPTIONS'])
 def recommend():
+    # Handle CORS preflight requests
+    if request.method == "OPTIONS":
+        return ("", 204)
+        
     try:
         json_data = request.get_json(force=True, silent=False)
         segments = json_data.get("segments", [])
