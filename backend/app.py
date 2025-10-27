@@ -10,37 +10,47 @@ import requests
 import google.generativeai as genai
 from dotenv import load_dotenv
 
-# ---------------------- Setup & Config ----------
+# load .env variables from .env file
 load_dotenv()
 
 app = Flask(__name__)
 
-# ---- Allowed origins (both HTTP & HTTPS + localhost for dev) ----
+# ---------------------------------- CORS SETUP ----------------------------------
 ALLOWED_ORIGINS = set(filter(None, [
     "http://heatscapeapp.pixelcore.lk",
     "https://heatscapeapp.pixelcore.lk",
+
+    # OLD LB
     "http://heatscapeloadbalancer-1642811487.eu-north-1.elb.amazonaws.com",
     "https://heatscapeloadbalancer-1642811487.eu-north-1.elb.amazonaws.com",
+
+    # NEW LB
+    "http://heatscapeloadbalancer-1347254234.eu-north-1.elb.amazonaws.com",
+    "https://heatscapeloadbalancer-1347254234.eu-north-1.elb.amazonaws.com",
+
     # dev/local:
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 ]))
 
-# If you prefer env-driven wildcard (e.g., temporarily): CORS_ORIGINS="*"
+# Optional env override: CORS_ORIGINS="*" or comma-separated origins
 env_origins = os.getenv("CORS_ORIGINS", "").strip()
 if env_origins:
-    # comma-separated list or "*" for wildcard
     if env_origins == "*":
         ALLOWED_ORIGINS = {"*"}
     else:
         ALLOWED_ORIGINS.update([o.strip() for o in env_origins.split(",") if o.strip()])
 
-# Configure flask-cors for normal requests (still add our own headers after_request)
+# Configure flask-cors for normal requests (we still add our own headers in after_request)
 CORS(app,
      resources={r"/api/*": {"origins": list(ALLOWED_ORIGINS) if "*" not in ALLOWED_ORIGINS else "*"}},
      supports_credentials=True,
      methods=["GET", "POST", "OPTIONS"],
-     allow_headers=["Content-Type", "Authorization"],
+     allow_headers=[
+         "Content-Type", "content-type",
+         "Authorization", "authorization",
+         "X-Requested-With", "Accept", "Origin"
+     ],
      expose_headers=["Access-Control-Allow-Origin", "Access-Control-Allow-Credentials"],
      max_age=86400)
 
@@ -52,27 +62,43 @@ def _origin_is_allowed(origin: str) -> bool:
     return origin in ALLOWED_ORIGINS
 
 def _apply_cors_headers(resp):
+    """Attach CORS headers to any response, including errors and OPTIONS."""
     origin = request.headers.get("Origin", "")
     if _origin_is_allowed(origin):
         resp.headers["Access-Control-Allow-Origin"] = origin
         resp.headers["Vary"] = "Origin"
         resp.headers["Access-Control-Allow-Credentials"] = "true"
         resp.headers["Access-Control-Expose-Headers"] = "Access-Control-Allow-Origin, Access-Control-Allow-Credentials"
+        if request.method == "OPTIONS":
+            resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+            requested = request.headers.get("Access-Control-Request-Headers", "")
+            base = "Content-Type, content-type, Authorization, authorization, X-Requested-With, Accept, Origin"
+            resp.headers["Access-Control-Allow-Headers"] = base + (", " + requested if requested else "")
+            resp.headers["Access-Control-Max-Age"] = "86400"
     return resp
 
-# Global preflight catcher so proxies/LB that don’t forward OPTIONS to Flask endpoints still succeed
+# Global preflight catcher so proxies/LB that don’t forward OPTIONS to specific endpoints still succeed
 @app.route("/api/<path:_any>", methods=["OPTIONS"])
 def catch_all_options(_any):
     resp = make_response("", 204)
-    req_method = request.headers.get("Access-Control-Request-Method", "POST")
-    req_headers = request.headers.get("Access-Control-Request-Headers", "Content-Type, Authorization")
-    resp.headers["Access-Control-Allow-Methods"] = req_method
-    resp.headers["Access-Control-Allow-Headers"] = req_headers
+    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    requested = request.headers.get("Access-Control-Request-Headers", "")
+    base = "Content-Type, content-type, Authorization, authorization, X-Requested-With, Accept, Origin"
+    resp.headers["Access-Control-Allow-Headers"] = base + (", " + requested if requested else "")
+    resp.headers["Access-Control-Max-Age"] = "86400"
     return _apply_cors_headers(resp)
 
 # Ensure ALL responses (including 4xx/5xx) carry CORS when possible
 @app.after_request
 def after(resp):
+    if request.method == "OPTIONS":
+        if "Access-Control-Allow-Methods" not in resp.headers:
+            resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        if "Access-Control-Allow-Headers" not in resp.headers:
+            requested = request.headers.get("Access-Control-Request-Headers", "")
+            base = "Content-Type, content-type, Authorization, authorization, X-Requested-With, Accept, Origin"
+            resp.headers["Access-Control-Allow-Headers"] = base + (", " + requested if requested else "")
+        resp.headers["Access-Control-Max-Age"] = "86400"
     return _apply_cors_headers(resp)
 
 # ---------------------- Model & Scaler ----
@@ -100,6 +126,7 @@ material_mapping = {
     "rubber": 5, "sand": 6, "soil": 7, "solar panel": 8, "steel": 9,
     "water": 10, "artificial turf": 11, "glass": 12
 }
+# Treat artificial turf as heat-retaining (synthetic) rather than vegetation
 heat_materials = {"asphalt", "concrete", "metal", "steel", "solar panel", "rubber", "plastic", "glass", "artificial turf"}
 veg_materials = {"grass", "soil"}
 
@@ -123,6 +150,10 @@ def to_float(x, default=None):
         return default
 
 def parse_segments(segments):
+    """
+    Return (rows, errors) where rows are:
+      [label, material(str), temp(float), humidity(float), area(float)]
+    """
     rows, errors = [], []
     for idx, s in enumerate(segments):
         if not isinstance(s, dict):
@@ -161,10 +192,12 @@ def compute_metrics(rows):
         "avg_humidity": float(avg_humidity),
     }
 
+# Looser humidity gate for humid climates; rely primarily on vote + heat/veg/temperature
 def rule_based_uhi(m):
     return (m["avg_temp"] > 34 and m["heat_pct"] > 55 and m["veg_pct"] < 25)
 
 def model_vote(rows):
+    """Majority vote of per-segment predictions (1=UHI)."""
     if not rows:
         return None
     X = np.array([[material_mapping[r[1]], r[2], r[3], r[4]] for r in rows], dtype=float)
@@ -173,7 +206,8 @@ def model_vote(rows):
     vals, counts = np.unique(preds, return_counts=True)
     return int(vals[np.argmax(counts)]), preds.tolist()
 
-def jsonify_float(x): return float(x)
+def jsonify_float(x):
+    return float(x)
 
 def format_segments_for_prompt(segments):
     lines = []
@@ -207,6 +241,7 @@ def predict_heat_island():
         vote_text = {0: "No Heat Island", 1: "Heat Island"}.get(vote, "N/A")
         final_is_heat_island = (vote == 1) or rule_based_uhi(metrics)
 
+        # vote details for debugging / transparency
         uniq, cnts = (np.unique(np.array(preds), return_counts=True) if len(preds) else (np.array([]), np.array([])))
         vote_details = {
             "0": int(cnts[uniq.tolist().index(0)]) if 0 in uniq.tolist() else 0,
@@ -259,11 +294,13 @@ def recommend():
 
         image_bytes = None
         if image_b64:
+            # Optional: strip data URL prefix if present
             if image_b64.startswith("data:"):
                 try:
                     image_b64 = image_b64.split(",", 1)[1]
                 except Exception:
                     return jsonify({"error": "Invalid data URL format"}), 400
+            # Base64 guard (~13MB decoded -> ~18MB base64)
             if len(image_b64) > 18_000_000:
                 return jsonify({"error": "Image too large"}), 413
             try:
@@ -293,8 +330,7 @@ def recommend():
                     "avg_temperature": round(float(m["avg_temp"]), 1),
                     "avg_humidity": round(float(m["avg_humidity"]), 1),
                     "heat_retaining_percent": round(float(m["heat_pct"]), 2),
-                    "vegetation_percent": round(float(m["veg_pct"]), 2,
-                    ),
+                    "vegetation_percent": round(float(m["veg_pct"]), 2),
                 },
                 "validation_warnings": errors
             }), 200
@@ -341,6 +377,7 @@ def recommend():
         print("[ERROR] /api/vlm/recommend exception:", str(e))
         return jsonify({"error": str(e)}), 500
 
+# ---------------------- ANSWER-ONLY follow-up chat ----------------------
 @app.route('/api/vlm/recommend/chat', methods=['POST'])
 def recommend_chat():
     try:
@@ -348,7 +385,7 @@ def recommend_chat():
 
         message = (data.get("message") or "").strip()
         prior_recommendation = data.get("prior_recommendation") or ""
-        history = data.get("history") or []
+        history = data.get("history") or []  # [{role:'user'|'assistant', text:'...'}]
 
         segments = data.get("segments") or []
         image_url = (data.get("image_url") or "").strip()
@@ -365,6 +402,7 @@ def recommend_chat():
                 "details": seg_errors or ["All segments were rejected (check material, temp, humidity, area)."]
             }), 400
 
+        # Optional image retrieval (chat can proceed without image)
         image_bytes = None
         if image_b64:
             if image_b64.startswith("data:"):
@@ -372,7 +410,7 @@ def recommend_chat():
                     image_b64 = image_b64.split(",", 1)[1]
                 except Exception:
                     return jsonify({"error": "Invalid data URL format"}), 400
-            if len(image_b64) > 18_000_000:
+            if len(image_b64) > 18_000_000:  # ~13 MB decoded cap
                 return jsonify({"error": "Image too large"}), 413
             try:
                 image_bytes = base64.b64decode(image_b64, validate=True)
@@ -390,10 +428,12 @@ def recommend_chat():
         if image_mime not in ("image/jpeg", "image/png", "image/webp"):
             image_mime = "image/jpeg"
 
+        # -------- answer-only prompting --------
         history_lines = []
         for turn in history:
             role = str(turn.get("role", "")).lower()
-            text = str(turn.get("text", "")).trim() if hasattr(str, "trim") else str(turn.get("text", "")).strip()
+            text_val = str(turn.get("text", ""))
+            text = text_val.strip()
             if not text:
                 continue
             who = "User" if role == "user" else "Assistant"
