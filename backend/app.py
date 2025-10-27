@@ -10,7 +10,7 @@ import requests
 import google.generativeai as genai
 from dotenv import load_dotenv
 
-# ---------------------- Setup & Config ----------------------
+# ---------------------- Setup & Config ----------
 load_dotenv()
 
 app = Flask(__name__)
