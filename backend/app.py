@@ -1,5 +1,5 @@
 # app.py
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, make_response
 from flask_cors import CORS
 import numpy as np
 import joblib
@@ -15,16 +15,12 @@ load_dotenv()
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {
-    "origins": [
-        "http://localhost:3000",  
-        "http://heatscapeapp.pixelcore.lk/", 
-        os.getenv("CORS_ORIGINS", "*")  
-    ],
+    "origins": ["*"],  # Allow all origins since we're using AWS ELB
     "methods": ["GET", "POST", "OPTIONS"],
     "allow_headers": ["Content-Type", "Authorization"],
     "expose_headers": ["Content-Type"],
-    "supports_credentials": True,
-    "max_age": 600  
+    "supports_credentials": False,  # Set to False when using "*" origins
+    "max_age": 600
 }})
 
 # ---- Model & Scaler ----
@@ -204,7 +200,11 @@ def predict_heat_island():
 def recommend():
     # Handle CORS preflight requests
     if request.method == "OPTIONS":
-        return ("", 204)
+        response = make_response()
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+        return response
         
     try:
         json_data = request.get_json(force=True, silent=False)
