@@ -282,19 +282,33 @@ def predict_heat_island():
         return jsonify({"error": str(e)}), 500
 
 from functools import partial
-import signal
+from threading import Thread
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
-def timeout_handler(signum, frame):
-    raise TimeoutError("Request timed out")
+# Use threading.Timer for timeout instead of signals
+def run_with_timeout(func, timeout):
+    result = {"value": None, "exception": None}
+    def target():
+        try:
+            result["value"] = func()
+        except Exception as e:
+            result["exception"] = e
+    
+    thread = Thread(target=target)
+    thread.daemon = True
+    thread.start()
+    thread.join(timeout)
+    
+    if thread.is_alive():
+        thread.join(0)  # Non-blocking join
+        raise TimeoutError("Request timed out")
+    if result["exception"]:
+        raise result["exception"]
+    return result["value"]
 
 @app.route('/api/vlm/recommend', methods=['POST'])
 def recommend():
-    try:
-        # Set global request timeout
-        signal.signal(signal.SIGALRM, timeout_handler)
-        signal.alarm(REQUEST_TIMEOUT)
-
+    def process_request():
         json_data = request.get_json(force=True, silent=False) or {}
         segments = json_data.get("segments", [])
         image_b64 = (json_data.get("image_base64") or "").strip()
@@ -392,8 +406,9 @@ def recommend():
             "validation_warnings": errors
         })
 
-    except TimeoutError as te:
-        print("[ERROR] /api/vlm/recommend timeout:", str(te))
+    try:
+        return run_with_timeout(process_request, REQUEST_TIMEOUT)
+    except TimeoutError:
         return jsonify({
             "error": "Request timed out",
             "message": "The request took too long to process. Please try again with a smaller image or fewer segments."
@@ -404,8 +419,6 @@ def recommend():
             "error": str(e),
             "message": "An unexpected error occurred"
         }), 500
-    finally:
-        signal.alarm(0)  # Disable the alarm jsonify({"error": str(e)}), 500
 
 # ---------------------- ANSWER-ONLY follow-up chat ----------------------
 @app.route('/api/vlm/recommend/chat', methods=['POST'])
