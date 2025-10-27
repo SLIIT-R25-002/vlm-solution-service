@@ -16,11 +16,7 @@ load_dotenv()
 app = Flask(__name__)
 
 # In production, restrict origins via CORS_ORIGINS="https://your-frontend"
-CORS(app, resources={r"/*": {
-    "origins": os.getenv("CORS_ORIGINS", "*"),
-    "methods": ["GET", "POST", "OPTIONS"],
-    "allow_headers": ["Content-Type", "Authorization"],
-}})
+CORS(app)
 
 # ---- Model & Scaler ----
 MODEL_PATH = "heat_island_model.pkl"
