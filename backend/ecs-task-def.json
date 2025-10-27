@@ -6,21 +6,15 @@
         {
             "cpu": 1024,
             "environment": [],
-            "secrets": [
-                {
-                    "name": "GEMINI_API_KEY",
-                    "valueFrom": "arn:aws:secretsmanager:eu-north-1:597088026916:secret:heatscape/vlm/prod/gemini"
-                }
-            ],
             "environmentFiles": [],
             "essential": true,
-            "image": "597088026916.dkr.ecr.eu-north-1.amazonaws.com/vlm-solution-service:latest",
+            "image": "597088026916.dkr.ecr.us-east-1.amazonaws.com/vlm-solution-service:latest",
             "logConfiguration": {
                 "logDriver": "awslogs",
                 "options": {
                     "awslogs-group": "/ecs/HeatScapeTask-VLM",
                     "awslogs-create-group": "true",
-                    "awslogs-region": "eu-north-1",
+                    "awslogs-region": "us-east-1",
                     "awslogs-stream-prefix": "ecs"
                 },
                 "secretOptions": []
@@ -94,7 +88,7 @@
         "operatingSystemFamily": "LINUX"
     },
     "status": "ACTIVE",
-    "taskDefinitionArn": "arn:aws:ecs:eu-north-1:597088026916:task-definition/HeatScapeTask-VLM:1",
+    "taskDefinitionArn": "arn:aws:ecs:us-east-1:597088026916:task-definition/HeatScapeTask-VLM:1",
     "taskRoleArn": "arn:aws:iam::597088026916:role/ecsTaskExecutionRole",
     "volumes": [],
     "tags": []
