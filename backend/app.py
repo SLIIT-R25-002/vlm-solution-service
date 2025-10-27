@@ -14,9 +14,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 app = Flask(__name__)
-
-# In production, restrict origins via CORS_ORIGINS="https://your-frontend"
 CORS(app)
+# In production, restrict origins via CORS_ORIGINS="https://your-frontend"
+# CORS(app, resources={r"/*": {
+#     "origins": os.getenv("CORS_ORIGINS", "*"),
+#     "methods": ["GET", "POST", "OPTIONS"],
+#     "allow_headers": ["Content-Type", "Authorization"],
+# }})
 
 # ---- Model & Scaler ----
 MODEL_PATH = "heat_island_model.pkl"
@@ -138,26 +142,12 @@ def format_segments_for_prompt(segments):
     return "\n".join(lines)
 
 # ---------------------- Routes ----------------------
-@app.errorhandler(500)
-def handle_500_error(e):
-    return jsonify({
-        "error": str(e),
-        "message": "An unexpected error occurred"
-    }), 500
-
-@app.route('/api/vlm/health', methods=['GET'])
+@app.route('/api/health', methods=['GET'])
 def health():
     return jsonify(status="ok"), 200
 
-@app.route('/api/vlm/predict', methods=['POST', 'OPTIONS'])
+@app.route('/api/vlm/predict', methods=['POST'])
 def predict_heat_island():
-    # Handle CORS preflight explicitly to ensure the load-balancer / proxy
-    # returns an HTTP-ok response for OPTIONS requests. Returning 204 here
-    # prevents browsers from blocking the following POST due to a failing
-    # preflight when intermediaries don't forward OPTIONS correctly.
-    if request.method == 'OPTIONS':
-        return ('', 204)
-
     try:
         payload = request.get_json(force=True, silent=False)
         segments = payload.get("segments", [])
@@ -205,16 +195,11 @@ def predict_heat_island():
         print("[ERROR] /predict exception:", str(e))
         return jsonify({"error": str(e)}), 500
 
-@app.route('/api/vlm/recommend', methods=['POST', 'OPTIONS'])
+@app.route('/api/vlm/recommend', methods=['POST'])
 def recommend():
-    # Support OPTIONS preflight explicitly for the recommend endpoint as well.
-    if request.method == 'OPTIONS':
-        return ('', 204)
-
     try:
-        with app.app_context():  # Ensure we have an application context
-            json_data = request.get_json(force=True, silent=False)
-            segments = json_data.get("segments", [])
+        json_data = request.get_json(force=True, silent=False)
+        segments = json_data.get("segments", [])
         image_b64 = (json_data.get("image_base64") or "").strip()
         image_url = (json_data.get("image_url") or "").strip()
         mime_type = (json_data.get("image_mime") or "image/jpeg").lower()
