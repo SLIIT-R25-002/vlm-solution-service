@@ -14,12 +14,16 @@ from dotenv import load_dotenv
 load_dotenv()
 
 app = Flask(__name__)
-# Configure CORS for production frontend
+# Configure CORS for production frontend and load balancer
 CORS(app, resources={r"/*": {
-    "origins": ["http://heatscapeapp.pixelcore.lk"],
+    "origins": [
+        "http://heatscapeapp.pixelcore.lk",
+        "http://heatscapeloadbalancer-1642811487.eu-north-1.elb.amazonaws.com"
+    ],
     "methods": ["GET", "POST", "OPTIONS"],
     "allow_headers": ["Content-Type", "Authorization"],
-    "supports_credentials": True
+    "supports_credentials": True,
+    "expose_headers": ["Access-Control-Allow-Origin"]
 }})
 
 # ---- Model & Scaler ----
