@@ -1,7 +1,6 @@
 # app.py
-from flask import Flask, request, jsonify, make_response
+from flask import Flask, request, jsonify
 from flask_cors import CORS
-import time
 import numpy as np
 import joblib
 import os
@@ -11,102 +10,19 @@ import requests
 import google.generativeai as genai
 from dotenv import load_dotenv
 
-# load .env variables from .env file
+# ---------------------- Setup & Config ----------------------
 load_dotenv()
-
-# Timeout configurations (in seconds)
-GEMINI_TIMEOUT = int(os.getenv('GEMINI_TIMEOUT', '30'))  # 30 second timeout for Gemini API
-REQUEST_TIMEOUT = int(os.getenv('REQUEST_TIMEOUT', '45'))  # 45 second total request timeout
 
 app = Flask(__name__)
 
-# ---------------------------------- CORS SETUP ----------------------------------
-ALLOWED_ORIGINS = set(filter(None, [
-    "http://heatscapeapp.pixelcore.lk",
-    "https://heatscapeapp.pixelcore.lk",
+# In production, restrict origins via CORS_ORIGINS="https://your-frontend"
+CORS(app, resources={r"/*": {
+    "origins": os.getenv("CORS_ORIGINS", "*"),
+    "methods": ["GET", "POST", "OPTIONS"],
+    "allow_headers": ["Content-Type", "Authorization"],
+}})
 
-    # OLD LB
-    "http://heatscapeloadbalancer-1642811487.eu-north-1.elb.amazonaws.com",
-    "https://heatscapeloadbalancer-1642811487.eu-north-1.elb.amazonaws.com",
-
-    # NEW LB
-    "http://heatscapeloadbalancer-1347254234.eu-north-1.elb.amazonaws.com",
-    "https://heatscapeloadbalancer-1347254234.eu-north-1.elb.amazonaws.com",
-
-    # dev/local:
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-]))
-
-# Optional env override: CORS_ORIGINS="*" or comma-separated origins
-env_origins = os.getenv("CORS_ORIGINS", "").strip()
-if env_origins:
-    if env_origins == "*":
-        ALLOWED_ORIGINS = {"*"}
-    else:
-        ALLOWED_ORIGINS.update([o.strip() for o in env_origins.split(",") if o.strip()])
-
-# Configure flask-cors for normal requests (we still add our own headers in after_request)
-CORS(app,
-     resources={r"/api/*": {"origins": list(ALLOWED_ORIGINS) if "*" not in ALLOWED_ORIGINS else "*"}},
-     supports_credentials=True,
-     methods=["GET", "POST", "OPTIONS"],
-     allow_headers=[
-         "Content-Type", "content-type",
-         "Authorization", "authorization",
-         "X-Requested-With", "Accept", "Origin"
-     ],
-     expose_headers=["Access-Control-Allow-Origin", "Access-Control-Allow-Credentials"],
-     max_age=86400)
-
-def _origin_is_allowed(origin: str) -> bool:
-    if not origin:
-        return False
-    if "*" in ALLOWED_ORIGINS:
-        return True
-    return origin in ALLOWED_ORIGINS
-
-def _apply_cors_headers(resp):
-    """Attach CORS headers to any response, including errors and OPTIONS."""
-    origin = request.headers.get("Origin", "")
-    if _origin_is_allowed(origin):
-        resp.headers["Access-Control-Allow-Origin"] = origin
-        resp.headers["Vary"] = "Origin"
-        resp.headers["Access-Control-Allow-Credentials"] = "true"
-        resp.headers["Access-Control-Expose-Headers"] = "Access-Control-Allow-Origin, Access-Control-Allow-Credentials"
-        if request.method == "OPTIONS":
-            resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-            requested = request.headers.get("Access-Control-Request-Headers", "")
-            base = "Content-Type, content-type, Authorization, authorization, X-Requested-With, Accept, Origin"
-            resp.headers["Access-Control-Allow-Headers"] = base + (", " + requested if requested else "")
-            resp.headers["Access-Control-Max-Age"] = "86400"
-    return resp
-
-# Global preflight catcher so proxies/LB that don’t forward OPTIONS to specific endpoints still succeed
-@app.route("/api/<path:_any>", methods=["OPTIONS"])
-def catch_all_options(_any):
-    resp = make_response("", 204)
-    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-    requested = request.headers.get("Access-Control-Request-Headers", "")
-    base = "Content-Type, content-type, Authorization, authorization, X-Requested-With, Accept, Origin"
-    resp.headers["Access-Control-Allow-Headers"] = base + (", " + requested if requested else "")
-    resp.headers["Access-Control-Max-Age"] = "86400"
-    return _apply_cors_headers(resp)
-
-# Ensure ALL responses (including 4xx/5xx) carry CORS when possible
-@app.after_request
-def after(resp):
-    if request.method == "OPTIONS":
-        if "Access-Control-Allow-Methods" not in resp.headers:
-            resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-        if "Access-Control-Allow-Headers" not in resp.headers:
-            requested = request.headers.get("Access-Control-Request-Headers", "")
-            base = "Content-Type, content-type, Authorization, authorization, X-Requested-With, Accept, Origin"
-            resp.headers["Access-Control-Allow-Headers"] = base + (", " + requested if requested else "")
-        resp.headers["Access-Control-Max-Age"] = "86400"
-    return _apply_cors_headers(resp)
-
-# ---------------------- Model & Scaler ----
+# ---- Model & Scaler ----
 MODEL_PATH = "heat_island_model.pkl"
 SCALER_PATH = "scaler.pkl"
 
@@ -123,10 +39,7 @@ if not GEMINI_API_KEY:
     raise EnvironmentError("GEMINI_API_KEY is not set in .env")
 
 genai.configure(api_key=GEMINI_API_KEY)
-gemini_model = genai.GenerativeModel("gemini-2.5-flash", 
-    generation_config={
-        "timeout": GEMINI_TIMEOUT
-    })
+gemini_model = genai.GenerativeModel("gemini-2.5-flash")
 
 # ---- Materials ----
 material_mapping = {
@@ -162,7 +75,8 @@ def parse_segments(segments):
     Return (rows, errors) where rows are:
       [label, material(str), temp(float), humidity(float), area(float)]
     """
-    rows, errors = [], []
+    rows = []
+    errors = []
     for idx, s in enumerate(segments):
         if not isinstance(s, dict):
             errors.append(f"Segment {idx} not an object")
@@ -228,12 +142,19 @@ def format_segments_for_prompt(segments):
     return "\n".join(lines)
 
 # ---------------------- Routes ----------------------
-@app.route('/api/health', methods=['GET'])
+@app.route('/api/vlm/health', methods=['GET'])
 def health():
     return jsonify(status="ok"), 200
 
-@app.route('/api/vlm/predict', methods=['POST'])
+@app.route('/api/vlm/predict', methods=['POST', 'OPTIONS'])
 def predict_heat_island():
+    # Handle CORS preflight explicitly to ensure the load-balancer / proxy
+    # returns an HTTP-ok response for OPTIONS requests. Returning 204 here
+    # prevents browsers from blocking the following POST due to a failing
+    # preflight when intermediaries don't forward OPTIONS correctly.
+    if request.method == 'OPTIONS':
+        return ('', 204)
+
     try:
         payload = request.get_json(force=True, silent=False)
         segments = payload.get("segments", [])
@@ -281,39 +202,21 @@ def predict_heat_island():
         print("[ERROR] /predict exception:", str(e))
         return jsonify({"error": str(e)}), 500
 
-from functools import partial
-from threading import Thread
-from concurrent.futures import ThreadPoolExecutor, TimeoutError
-
-# Use threading.Timer for timeout instead of signals
-def run_with_timeout(func, timeout):
-    result = {"value": None, "exception": None}
-    def target():
-        try:
-            result["value"] = func()
-        except Exception as e:
-            result["exception"] = e
-    
-    thread = Thread(target=target)
-    thread.daemon = True
-    thread.start()
-    thread.join(timeout)
-    
-    if thread.is_alive():
-        thread.join(0)  # Non-blocking join
-        raise TimeoutError("Request timed out")
-    if result["exception"]:
-        raise result["exception"]
-    return result["value"]
-
-@app.route('/api/vlm/recommend', methods=['POST'])
+@app.route('/api/vlm/recommend', methods=['POST', 'OPTIONS'])
 def recommend():
-    def process_request():
-        json_data = request.get_json(force=True, silent=False) or {}
+    # Support OPTIONS preflight explicitly for the recommend endpoint as well.
+    if request.method == 'OPTIONS':
+        return ('', 204)
+
+    try:
+        json_data = request.get_json(force=True, silent=False)
         segments = json_data.get("segments", [])
         image_b64 = (json_data.get("image_base64") or "").strip()
         image_url = (json_data.get("image_url") or "").strip()
         mime_type = (json_data.get("image_mime") or "image/jpeg").lower()
+
+        print("[DEBUG] /recommend keys:", list(json_data.keys()))
+        print("[DEBUG] segments:", len(segments), "image_b64?", bool(image_b64), "image_url?", bool(image_url))
 
         rows, errors = parse_segments(segments)
         if not rows:
@@ -406,23 +309,17 @@ def recommend():
             "validation_warnings": errors
         })
 
-    try:
-        return run_with_timeout(process_request, REQUEST_TIMEOUT)
-    except TimeoutError:
-        return jsonify({
-            "error": "Request timed out",
-            "message": "The request took too long to process. Please try again with a smaller image or fewer segments."
-        }), 504
     except Exception as e:
         print("[ERROR] /api/vlm/recommend exception:", str(e))
-        return jsonify({
-            "error": str(e),
-            "message": "An unexpected error occurred"
-        }), 500
+        return jsonify({"error": str(e)}), 500
 
 # ---------------------- ANSWER-ONLY follow-up chat ----------------------
-@app.route('/api/vlm/recommend/chat', methods=['POST'])
+@app.route('/api/vlm/recommend/chat', methods=['POST', 'OPTIONS'])
 def recommend_chat():
+    # CORS preflight
+    if request.method == "OPTIONS":
+        return ("", 204)
+
     try:
         data = request.get_json(force=True, silent=False) or {}
 
@@ -475,8 +372,7 @@ def recommend_chat():
         history_lines = []
         for turn in history:
             role = str(turn.get("role", "")).lower()
-            text_val = str(turn.get("text", ""))
-            text = text_val.strip()
+            text = str(turn.get("text", "")).strip()
             if not text:
                 continue
             who = "User" if role == "user" else "Assistant"
@@ -515,26 +411,7 @@ def recommend_chat():
         print("[ERROR] /api/vlm/recommend/chat exception:", str(e))
         return jsonify({"error": str(e)}), 500
 
-# Request timing middleware
-@app.before_request
-def start_timer():
-    request.start_time = time.time()
-
-@app.after_request
-def log_request(response):
-    if request.path.startswith('/api/'):
-        now = time.time()
-        duration = round(now - request.start_time, 2)
-        host = request.headers.get('Host', '')
-        log_line = f'[{host}] {request.method} {request.path} {response.status_code} {duration}s'
-        if duration > REQUEST_TIMEOUT * 0.8:  # Log if request took > 80% of timeout
-            print(f"[WARN] Slow request: {log_line}")
-        else:
-            print(f"[INFO] {log_line}")
-    return response
-
 # ---------------------- Start Server ----------------------
 if __name__ == '__main__':
-    print("[INFO] Starting Flask server at http://0.0.0.0:5000 ...")
-    # Consider using gunicorn in production; the built-in server is for dev only.
-    app.run(host="0.0.0.0", debug=True, port=5000)
+    print("[INFO] Starting Flask server at http://localhost:5000 ...")
+    app.run(host="0.0.0.0", debug=True, port=5000)  
