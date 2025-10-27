@@ -14,11 +14,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 app = Flask(__name__)
-# In production, restrict origins via CORS_ORIGINS="https://your-frontend"
+# Configure CORS for production frontend
 CORS(app, resources={r"/*": {
-    "origins": os.getenv("CORS_ORIGINS", "*"),
+    "origins": ["http://heatscapeapp.pixelcore.lk"],
     "methods": ["GET", "POST", "OPTIONS"],
     "allow_headers": ["Content-Type", "Authorization"],
+    "supports_credentials": True
 }})
 
 # ---- Model & Scaler ----
