@@ -1,5 +1,5 @@
 # app.py
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, make_response
 from flask_cors import CORS
 import numpy as np
 import joblib
@@ -14,19 +14,68 @@ from dotenv import load_dotenv
 load_dotenv()
 
 app = Flask(__name__)
-# Configure CORS for production frontend and load balancer
-CORS(app, resources={r"/*": {
-    "origins": [
-        "http://heatscapeapp.pixelcore.lk",
-        "http://heatscapeloadbalancer-1642811487.eu-north-1.elb.amazonaws.com"
-    ],
-    "methods": ["GET", "POST", "OPTIONS"],
-    "allow_headers": ["Content-Type", "Authorization"],
-    "supports_credentials": True,
-    "expose_headers": ["Access-Control-Allow-Origin"]
-}})
 
-# ---- Model & Scaler ----
+# ---- Allowed origins (both HTTP & HTTPS + localhost for dev) ----
+ALLOWED_ORIGINS = set(filter(None, [
+    "http://heatscapeapp.pixelcore.lk",
+    "https://heatscapeapp.pixelcore.lk",
+    "http://heatscapeloadbalancer-1642811487.eu-north-1.elb.amazonaws.com",
+    "https://heatscapeloadbalancer-1642811487.eu-north-1.elb.amazonaws.com",
+    # dev/local:
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]))
+
+# If you prefer env-driven wildcard (e.g., temporarily): CORS_ORIGINS="*"
+env_origins = os.getenv("CORS_ORIGINS", "").strip()
+if env_origins:
+    # comma-separated list or "*" for wildcard
+    if env_origins == "*":
+        ALLOWED_ORIGINS = {"*"}
+    else:
+        ALLOWED_ORIGINS.update([o.strip() for o in env_origins.split(",") if o.strip()])
+
+# Configure flask-cors for normal requests (still add our own headers after_request)
+CORS(app,
+     resources={r"/api/*": {"origins": list(ALLOWED_ORIGINS) if "*" not in ALLOWED_ORIGINS else "*"}},
+     supports_credentials=True,
+     methods=["GET", "POST", "OPTIONS"],
+     allow_headers=["Content-Type", "Authorization"],
+     expose_headers=["Access-Control-Allow-Origin", "Access-Control-Allow-Credentials"],
+     max_age=86400)
+
+def _origin_is_allowed(origin: str) -> bool:
+    if not origin:
+        return False
+    if "*" in ALLOWED_ORIGINS:
+        return True
+    return origin in ALLOWED_ORIGINS
+
+def _apply_cors_headers(resp):
+    origin = request.headers.get("Origin", "")
+    if _origin_is_allowed(origin):
+        resp.headers["Access-Control-Allow-Origin"] = origin
+        resp.headers["Vary"] = "Origin"
+        resp.headers["Access-Control-Allow-Credentials"] = "true"
+        resp.headers["Access-Control-Expose-Headers"] = "Access-Control-Allow-Origin, Access-Control-Allow-Credentials"
+    return resp
+
+# Global preflight catcher so proxies/LB that don’t forward OPTIONS to Flask endpoints still succeed
+@app.route("/api/<path:_any>", methods=["OPTIONS"])
+def catch_all_options(_any):
+    resp = make_response("", 204)
+    req_method = request.headers.get("Access-Control-Request-Method", "POST")
+    req_headers = request.headers.get("Access-Control-Request-Headers", "Content-Type, Authorization")
+    resp.headers["Access-Control-Allow-Methods"] = req_method
+    resp.headers["Access-Control-Allow-Headers"] = req_headers
+    return _apply_cors_headers(resp)
+
+# Ensure ALL responses (including 4xx/5xx) carry CORS when possible
+@app.after_request
+def after(resp):
+    return _apply_cors_headers(resp)
+
+# ---------------------- Model & Scaler ----
 MODEL_PATH = "heat_island_model.pkl"
 SCALER_PATH = "scaler.pkl"
 
@@ -51,7 +100,6 @@ material_mapping = {
     "rubber": 5, "sand": 6, "soil": 7, "solar panel": 8, "steel": 9,
     "water": 10, "artificial turf": 11, "glass": 12
 }
-# Treat artificial turf as heat-retaining (synthetic) rather than vegetation
 heat_materials = {"asphalt", "concrete", "metal", "steel", "solar panel", "rubber", "plastic", "glass", "artificial turf"}
 veg_materials = {"grass", "soil"}
 
@@ -75,12 +123,7 @@ def to_float(x, default=None):
         return default
 
 def parse_segments(segments):
-    """
-    Return (rows, errors) where rows are:
-      [label, material(str), temp(float), humidity(float), area(float)]
-    """
-    rows = []
-    errors = []
+    rows, errors = [], []
     for idx, s in enumerate(segments):
         if not isinstance(s, dict):
             errors.append(f"Segment {idx} not an object")
@@ -118,12 +161,10 @@ def compute_metrics(rows):
         "avg_humidity": float(avg_humidity),
     }
 
-# Looser humidity gate for humid climates; rely primarily on vote + heat/veg/temperature
 def rule_based_uhi(m):
     return (m["avg_temp"] > 34 and m["heat_pct"] > 55 and m["veg_pct"] < 25)
 
 def model_vote(rows):
-    """Majority vote of per-segment predictions (1=UHI)."""
     if not rows:
         return None
     X = np.array([[material_mapping[r[1]], r[2], r[3], r[4]] for r in rows], dtype=float)
@@ -132,8 +173,7 @@ def model_vote(rows):
     vals, counts = np.unique(preds, return_counts=True)
     return int(vals[np.argmax(counts)]), preds.tolist()
 
-def jsonify_float(x):
-    return float(x)
+def jsonify_float(x): return float(x)
 
 def format_segments_for_prompt(segments):
     lines = []
@@ -150,15 +190,8 @@ def format_segments_for_prompt(segments):
 def health():
     return jsonify(status="ok"), 200
 
-@app.route('/api/vlm/predict', methods=['POST', 'OPTIONS'])
+@app.route('/api/vlm/predict', methods=['POST'])
 def predict_heat_island():
-    # Handle CORS preflight explicitly to ensure the load-balancer / proxy
-    # returns an HTTP-ok response for OPTIONS requests. Returning 204 here
-    # prevents browsers from blocking the following POST due to a failing
-    # preflight when intermediaries don't forward OPTIONS correctly.
-    if request.method == 'OPTIONS':
-        return ('', 204)
-
     try:
         payload = request.get_json(force=True, silent=False)
         segments = payload.get("segments", [])
@@ -174,7 +207,6 @@ def predict_heat_island():
         vote_text = {0: "No Heat Island", 1: "Heat Island"}.get(vote, "N/A")
         final_is_heat_island = (vote == 1) or rule_based_uhi(metrics)
 
-        # vote details for debugging / transparency
         uniq, cnts = (np.unique(np.array(preds), return_counts=True) if len(preds) else (np.array([]), np.array([])))
         vote_details = {
             "0": int(cnts[uniq.tolist().index(0)]) if 0 in uniq.tolist() else 0,
@@ -206,21 +238,14 @@ def predict_heat_island():
         print("[ERROR] /predict exception:", str(e))
         return jsonify({"error": str(e)}), 500
 
-@app.route('/api/vlm/recommend', methods=['POST', 'OPTIONS'])
+@app.route('/api/vlm/recommend', methods=['POST'])
 def recommend():
-    # Support OPTIONS preflight explicitly for the recommend endpoint as well.
-    if request.method == 'OPTIONS':
-        return ('', 204)
-
     try:
-        json_data = request.get_json(force=True, silent=False)
+        json_data = request.get_json(force=True, silent=False) or {}
         segments = json_data.get("segments", [])
         image_b64 = (json_data.get("image_base64") or "").strip()
         image_url = (json_data.get("image_url") or "").strip()
         mime_type = (json_data.get("image_mime") or "image/jpeg").lower()
-
-        print("[DEBUG] /recommend keys:", list(json_data.keys()))
-        print("[DEBUG] segments:", len(segments), "image_b64?", bool(image_b64), "image_url?", bool(image_url))
 
         rows, errors = parse_segments(segments)
         if not rows:
@@ -234,13 +259,11 @@ def recommend():
 
         image_bytes = None
         if image_b64:
-            # Optional: strip data URL prefix if present
             if image_b64.startswith("data:"):
                 try:
                     image_b64 = image_b64.split(",", 1)[1]
                 except Exception:
                     return jsonify({"error": "Invalid data URL format"}), 400
-            # Base64 guard (~13MB decoded -> ~18MB base64)
             if len(image_b64) > 18_000_000:
                 return jsonify({"error": "Image too large"}), 413
             try:
@@ -270,7 +293,8 @@ def recommend():
                     "avg_temperature": round(float(m["avg_temp"]), 1),
                     "avg_humidity": round(float(m["avg_humidity"]), 1),
                     "heat_retaining_percent": round(float(m["heat_pct"]), 2),
-                    "vegetation_percent": round(float(m["veg_pct"]), 2),
+                    "vegetation_percent": round(float(m["veg_pct"]), 2,
+                    ),
                 },
                 "validation_warnings": errors
             }), 200
@@ -317,19 +341,14 @@ def recommend():
         print("[ERROR] /api/vlm/recommend exception:", str(e))
         return jsonify({"error": str(e)}), 500
 
-# ---------------------- ANSWER-ONLY follow-up chat ----------------------
-@app.route('/api/vlm/recommend/chat', methods=['POST', 'OPTIONS'])
+@app.route('/api/vlm/recommend/chat', methods=['POST'])
 def recommend_chat():
-    # CORS preflight
-    if request.method == "OPTIONS":
-        return ("", 204)
-
     try:
         data = request.get_json(force=True, silent=False) or {}
 
         message = (data.get("message") or "").strip()
         prior_recommendation = data.get("prior_recommendation") or ""
-        history = data.get("history") or []  # [{role:'user'|'assistant', text:'...'}]
+        history = data.get("history") or []
 
         segments = data.get("segments") or []
         image_url = (data.get("image_url") or "").strip()
@@ -346,7 +365,6 @@ def recommend_chat():
                 "details": seg_errors or ["All segments were rejected (check material, temp, humidity, area)."]
             }), 400
 
-        # Optional image retrieval (chat can proceed without image)
         image_bytes = None
         if image_b64:
             if image_b64.startswith("data:"):
@@ -354,7 +372,7 @@ def recommend_chat():
                     image_b64 = image_b64.split(",", 1)[1]
                 except Exception:
                     return jsonify({"error": "Invalid data URL format"}), 400
-            if len(image_b64) > 18_000_000:  # ~13 MB decoded cap
+            if len(image_b64) > 18_000_000:
                 return jsonify({"error": "Image too large"}), 413
             try:
                 image_bytes = base64.b64decode(image_b64, validate=True)
@@ -372,11 +390,10 @@ def recommend_chat():
         if image_mime not in ("image/jpeg", "image/png", "image/webp"):
             image_mime = "image/jpeg"
 
-        # -------- answer-only prompting --------
         history_lines = []
         for turn in history:
             role = str(turn.get("role", "")).lower()
-            text = str(turn.get("text", "")).strip()
+            text = str(turn.get("text", "")).trim() if hasattr(str, "trim") else str(turn.get("text", "")).strip()
             if not text:
                 continue
             who = "User" if role == "user" else "Assistant"
@@ -417,5 +434,6 @@ def recommend_chat():
 
 # ---------------------- Start Server ----------------------
 if __name__ == '__main__':
-    print("[INFO] Starting Flask server at http://localhost:5000 ...")
-    app.run(host="0.0.0.0", debug=True, port=5000)  
+    print("[INFO] Starting Flask server at http://0.0.0.0:5000 ...")
+    # Consider using gunicorn in production; the built-in server is for dev only.
+    app.run(host="0.0.0.0", debug=True, port=5000)
