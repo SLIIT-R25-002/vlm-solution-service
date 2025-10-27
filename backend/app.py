@@ -1,6 +1,7 @@
 # app.py
 from flask import Flask, request, jsonify, make_response
 from flask_cors import CORS
+import time
 import numpy as np
 import joblib
 import os
@@ -12,6 +13,10 @@ from dotenv import load_dotenv
 
 # load .env variables from .env file
 load_dotenv()
+
+# Timeout configurations (in seconds)
+GEMINI_TIMEOUT = int(os.getenv('GEMINI_TIMEOUT', '30'))  # 30 second timeout for Gemini API
+REQUEST_TIMEOUT = int(os.getenv('REQUEST_TIMEOUT', '45'))  # 45 second total request timeout
 
 app = Flask(__name__)
 
@@ -118,7 +123,10 @@ if not GEMINI_API_KEY:
     raise EnvironmentError("GEMINI_API_KEY is not set in .env")
 
 genai.configure(api_key=GEMINI_API_KEY)
-gemini_model = genai.GenerativeModel("gemini-2.5-flash")
+gemini_model = genai.GenerativeModel("gemini-2.5-flash", 
+    generation_config={
+        "timeout": GEMINI_TIMEOUT
+    })
 
 # ---- Materials ----
 material_mapping = {
@@ -273,9 +281,20 @@ def predict_heat_island():
         print("[ERROR] /predict exception:", str(e))
         return jsonify({"error": str(e)}), 500
 
+from functools import partial
+import signal
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
+
+def timeout_handler(signum, frame):
+    raise TimeoutError("Request timed out")
+
 @app.route('/api/vlm/recommend', methods=['POST'])
 def recommend():
     try:
+        # Set global request timeout
+        signal.signal(signal.SIGALRM, timeout_handler)
+        signal.alarm(REQUEST_TIMEOUT)
+
         json_data = request.get_json(force=True, silent=False) or {}
         segments = json_data.get("segments", [])
         image_b64 = (json_data.get("image_base64") or "").strip()
@@ -373,9 +392,20 @@ def recommend():
             "validation_warnings": errors
         })
 
+    except TimeoutError as te:
+        print("[ERROR] /api/vlm/recommend timeout:", str(te))
+        return jsonify({
+            "error": "Request timed out",
+            "message": "The request took too long to process. Please try again with a smaller image or fewer segments."
+        }), 504
     except Exception as e:
         print("[ERROR] /api/vlm/recommend exception:", str(e))
-        return jsonify({"error": str(e)}), 500
+        return jsonify({
+            "error": str(e),
+            "message": "An unexpected error occurred"
+        }), 500
+    finally:
+        signal.alarm(0)  # Disable the alarm jsonify({"error": str(e)}), 500
 
 # ---------------------- ANSWER-ONLY follow-up chat ----------------------
 @app.route('/api/vlm/recommend/chat', methods=['POST'])
@@ -471,6 +501,24 @@ def recommend_chat():
     except Exception as e:
         print("[ERROR] /api/vlm/recommend/chat exception:", str(e))
         return jsonify({"error": str(e)}), 500
+
+# Request timing middleware
+@app.before_request
+def start_timer():
+    request.start_time = time.time()
+
+@app.after_request
+def log_request(response):
+    if request.path.startswith('/api/'):
+        now = time.time()
+        duration = round(now - request.start_time, 2)
+        host = request.headers.get('Host', '')
+        log_line = f'[{host}] {request.method} {request.path} {response.status_code} {duration}s'
+        if duration > REQUEST_TIMEOUT * 0.8:  # Log if request took > 80% of timeout
+            print(f"[WARN] Slow request: {log_line}")
+        else:
+            print(f"[INFO] {log_line}")
+    return response
 
 # ---------------------- Start Server ----------------------
 if __name__ == '__main__':
