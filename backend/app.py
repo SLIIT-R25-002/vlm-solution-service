@@ -1,4 +1,5 @@
-# app.py
+# Add these changes to your app.py
+
 from flask import Flask, request, jsonify, make_response
 from flask_cors import CORS
 import numpy as np
@@ -14,14 +15,28 @@ from dotenv import load_dotenv
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {
-    "origins": ["*"],  # Allow all origins since we're using AWS ELB
-    "methods": ["GET", "POST", "OPTIONS"],
-    "allow_headers": ["Content-Type", "Authorization"],
-    "expose_headers": ["Content-Type"],
-    "supports_credentials": False,  # Set to False when using "*" origins
-    "max_age": 600
-}})
+
+# Enhanced CORS configuration
+CORS(app, resources={
+    r"/api/*": {
+        "origins": "*",
+        "methods": ["GET", "POST", "OPTIONS", "PUT", "DELETE"],
+        "allow_headers": ["Content-Type", "Authorization", "Accept"],
+        "expose_headers": ["Content-Type"],
+        "supports_credentials": False,
+        "max_age": 3600,
+        "send_wildcard": True
+    }
+})
+
+# Add CORS headers to every response
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization,Accept')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+    response.headers.add('Access-Control-Max-Age', '3600')
+    return response
 
 # ---- Model & Scaler ----
 MODEL_PATH = "heat_island_model.pkl"
@@ -48,7 +63,6 @@ material_mapping = {
     "rubber": 5, "sand": 6, "soil": 7, "solar panel": 8, "steel": 9,
     "water": 10, "artificial turf": 11, "glass": 12
 }
-# Treat artificial turf as heat-retaining (synthetic) rather than vegetation
 heat_materials = {"asphalt", "concrete", "metal", "steel", "solar panel", "rubber", "plastic", "glass", "artificial turf"}
 veg_materials = {"grass", "soil"}
 
@@ -72,10 +86,6 @@ def to_float(x, default=None):
         return default
 
 def parse_segments(segments):
-    """
-    Return (rows, errors) where rows are:
-      [label, material(str), temp(float), humidity(float), area(float)]
-    """
     rows = []
     errors = []
     for idx, s in enumerate(segments):
@@ -115,12 +125,10 @@ def compute_metrics(rows):
         "avg_humidity": float(avg_humidity),
     }
 
-# Looser humidity gate for humid climates; rely primarily on vote + heat/veg/temperature
 def rule_based_uhi(m):
     return (m["avg_temp"] > 34 and m["heat_pct"] > 55 and m["veg_pct"] < 25)
 
 def model_vote(rows):
-    """Majority vote of per-segment predictions (1=UHI)."""
     if not rows:
         return None
     X = np.array([[material_mapping[r[1]], r[2], r[3], r[4]] for r in rows], dtype=float)
@@ -143,12 +151,17 @@ def format_segments_for_prompt(segments):
     return "\n".join(lines)
 
 # ---------------------- Routes ----------------------
-@app.route('/api/health', methods=['GET'])
+@app.route('/api/health', methods=['GET', 'OPTIONS'])
 def health():
+    if request.method == 'OPTIONS':
+        return '', 204
     return jsonify(status="ok"), 200
 
-@app.route('/api/vlm/predict', methods=['POST'])
+@app.route('/api/vlm/predict', methods=['POST', 'OPTIONS'])
 def predict_heat_island():
+    if request.method == 'OPTIONS':
+        return '', 204
+        
     try:
         payload = request.get_json(force=True, silent=False)
         segments = payload.get("segments", [])
@@ -164,7 +177,6 @@ def predict_heat_island():
         vote_text = {0: "No Heat Island", 1: "Heat Island"}.get(vote, "N/A")
         final_is_heat_island = (vote == 1) or rule_based_uhi(metrics)
 
-        # vote details for debugging / transparency
         uniq, cnts = (np.unique(np.array(preds), return_counts=True) if len(preds) else (np.array([]), np.array([])))
         vote_details = {
             "0": int(cnts[uniq.tolist().index(0)]) if 0 in uniq.tolist() else 0,
@@ -198,13 +210,9 @@ def predict_heat_island():
 
 @app.route('/api/vlm/recommend', methods=['POST', 'OPTIONS'])
 def recommend():
-    # Handle CORS preflight requests
+    # Handle preflight
     if request.method == "OPTIONS":
-        response = make_response()
-        response.headers.add('Access-Control-Allow-Origin', '*')
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-        response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
-        return response
+        return '', 204
         
     try:
         json_data = request.get_json(force=True, silent=False)
@@ -228,13 +236,11 @@ def recommend():
 
         image_bytes = None
         if image_b64:
-            # Optional: strip data URL prefix if present
             if image_b64.startswith("data:"):
                 try:
                     image_b64 = image_b64.split(",", 1)[1]
                 except Exception:
                     return jsonify({"error": "Invalid data URL format"}), 400
-            # Base64 guard (~13MB decoded -> ~18MB base64)
             if len(image_b64) > 18_000_000:
                 return jsonify({"error": "Image too large"}), 413
             try:
@@ -290,9 +296,14 @@ def recommend():
 
         image_part = {"mime_type": mime_type, "data": image_bytes}
         try:
-            response = gemini_model.generate_content([prompt, image_part])
+            # Add timeout to Gemini call to prevent hanging
+            response = gemini_model.generate_content(
+                [prompt, image_part],
+                request_options={"timeout": 45}  # 45 second timeout
+            )
             cleaned = clean_markdown((getattr(response, "text", "") or "").strip())
         except Exception as ge:
+            print(f"[ERROR] Gemini generation failed: {ge}")
             cleaned = f"(generation failed: {ge})"
 
         return jsonify({
@@ -311,19 +322,17 @@ def recommend():
         print("[ERROR] /api/vlm/recommend exception:", str(e))
         return jsonify({"error": str(e)}), 500
 
-# ---------------------- ANSWER-ONLY follow-up chat ----------------------
 @app.route('/api/vlm/recommend/chat', methods=['POST', 'OPTIONS'])
 def recommend_chat():
-    # CORS preflight
     if request.method == "OPTIONS":
-        return ("", 204)
+        return '', 204
 
     try:
         data = request.get_json(force=True, silent=False) or {}
 
         message = (data.get("message") or "").strip()
         prior_recommendation = data.get("prior_recommendation") or ""
-        history = data.get("history") or []  # [{role:'user'|'assistant', text:'...'}]
+        history = data.get("history") or []
 
         segments = data.get("segments") or []
         image_url = (data.get("image_url") or "").strip()
@@ -340,7 +349,6 @@ def recommend_chat():
                 "details": seg_errors or ["All segments were rejected (check material, temp, humidity, area)."]
             }), 400
 
-        # Optional image retrieval (chat can proceed without image)
         image_bytes = None
         if image_b64:
             if image_b64.startswith("data:"):
@@ -348,7 +356,7 @@ def recommend_chat():
                     image_b64 = image_b64.split(",", 1)[1]
                 except Exception:
                     return jsonify({"error": "Invalid data URL format"}), 400
-            if len(image_b64) > 18_000_000:  # ~13 MB decoded cap
+            if len(image_b64) > 18_000_000:
                 return jsonify({"error": "Image too large"}), 413
             try:
                 image_bytes = base64.b64decode(image_b64, validate=True)
@@ -366,7 +374,6 @@ def recommend_chat():
         if image_mime not in ("image/jpeg", "image/png", "image/webp"):
             image_mime = "image/jpeg"
 
-        # -------- answer-only prompting --------
         history_lines = []
         for turn in history:
             role = str(turn.get("role", "")).lower()
@@ -398,9 +405,13 @@ def recommend_chat():
             parts.append({"mime_type": image_mime, "data": image_bytes})
 
         try:
-            resp = gemini_model.generate_content(parts)
+            resp = gemini_model.generate_content(
+                parts,
+                request_options={"timeout": 45}
+            )
             reply = clean_markdown((getattr(resp, "text", "") or "").strip())
         except Exception as ge:
+            print(f"[ERROR] Chat Gemini failed: {ge}")
             reply = f"(model error: {ge})"
 
         return jsonify({"reply": reply}), 200
@@ -411,5 +422,6 @@ def recommend_chat():
 
 # ---------------------- Start Server ----------------------
 if __name__ == '__main__':
-    print("[INFO] Starting Flask server at http://localhost:5000 ...")
-    app.run(host="0.0.0.0", debug=True, port=5000)  
+    print("[INFO] Starting Flask server at http://0.0.0.0:5000 ...")
+    # Use production WSGI server for deployment
+    app.run(host="0.0.0.0", debug=False, port=5000, threaded=True)
