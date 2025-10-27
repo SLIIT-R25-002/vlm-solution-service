@@ -142,6 +142,13 @@ def format_segments_for_prompt(segments):
     return "\n".join(lines)
 
 # ---------------------- Routes ----------------------
+@app.errorhandler(500)
+def handle_500_error(e):
+    return jsonify({
+        "error": str(e),
+        "message": "An unexpected error occurred"
+    }), 500
+
 @app.route('/api/vlm/health', methods=['GET'])
 def health():
     return jsonify(status="ok"), 200
@@ -209,8 +216,9 @@ def recommend():
         return ('', 204)
 
     try:
-        json_data = request.get_json(force=True, silent=False)
-        segments = json_data.get("segments", [])
+        with app.app_context():  # Ensure we have an application context
+            json_data = request.get_json(force=True, silent=False)
+            segments = json_data.get("segments", [])
         image_b64 = (json_data.get("image_base64") or "").strip()
         image_url = (json_data.get("image_url") or "").strip()
         mime_type = (json_data.get("image_mime") or "image/jpeg").lower()
