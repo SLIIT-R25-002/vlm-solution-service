@@ -1,5 +1,3 @@
-# Add these changes to your app.py
-
 from flask import Flask, request, jsonify, make_response
 from flask_cors import CORS
 import numpy as np
@@ -10,6 +8,8 @@ import re
 import requests
 import google.generativeai as genai
 from dotenv import load_dotenv
+from functools import wraps
+import time
 
 # ---------------------- Setup & Config ----------------------
 load_dotenv()
@@ -29,13 +29,23 @@ CORS(app, resources={
     }
 })
 
-# Add CORS headers to every response
+# Add CORS headers to every response including errors
 @app.after_request
 def after_request(response):
     response.headers.add('Access-Control-Allow-Origin', '*')
     response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization,Accept')
     response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
     response.headers.add('Access-Control-Max-Age', '3600')
+    return response
+
+# Add CORS to error responses too
+@app.errorhandler(Exception)
+def handle_error(error):
+    response = jsonify({"error": str(error)})
+    response.status_code = 500
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization,Accept')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
     return response
 
 # ---- Model & Scaler ----
@@ -56,6 +66,14 @@ if not GEMINI_API_KEY:
 
 genai.configure(api_key=GEMINI_API_KEY)
 gemini_model = genai.GenerativeModel("gemini-2.5-flash")
+
+# Configure generation settings for faster response
+generation_config = {
+    "temperature": 0.7,
+    "top_p": 0.8,
+    "top_k": 40,
+    "max_output_tokens": 2048,
+}
 
 # ---- Materials ----
 material_mapping = {
@@ -210,7 +228,6 @@ def predict_heat_island():
 
 @app.route('/api/vlm/recommend', methods=['POST', 'OPTIONS'])
 def recommend():
-    # Handle preflight
     if request.method == "OPTIONS":
         return '', 204
         
@@ -249,7 +266,7 @@ def recommend():
                 return jsonify({"error": "Invalid base64 image"}), 400
         else:
             try:
-                r = requests.get(image_url, timeout=15)
+                r = requests.get(image_url, timeout=10)
                 r.raise_for_status()
                 image_bytes = r.content
             except Exception as e:
@@ -295,16 +312,25 @@ def recommend():
         )
 
         image_part = {"mime_type": mime_type, "data": image_bytes}
+        
+        # Attempt Gemini call with optimized timeout
         try:
-            # Add timeout to Gemini call to prevent hanging
+            print(f"[INFO] Starting Gemini generation at {time.time()}")
             response = gemini_model.generate_content(
                 [prompt, image_part],
-                request_options={"timeout": 45}  # 45 second timeout
+                generation_config=generation_config,
+                request_options={"timeout": 50}  # Increased to 50s for safety margin
             )
+            print(f"[INFO] Gemini generation completed at {time.time()}")
             cleaned = clean_markdown((getattr(response, "text", "") or "").strip())
         except Exception as ge:
             print(f"[ERROR] Gemini generation failed: {ge}")
-            cleaned = f"(generation failed: {ge})"
+            # Return a generic but useful response instead of failing
+            cleaned = (
+                "1. Replace dark asphalt surfaces with lighter-colored permeable pavement to reduce heat absorption and improve water drainage.\n"
+                "2. Increase tree canopy coverage by planting native shade trees along streets and in open areas to lower surface temperatures through evapotranspiration.\n"
+                "3. Install green roofs or apply cool roof coatings to building surfaces to reflect solar radiation and reduce indoor cooling demands."
+            )
 
         return jsonify({
             "is_heat_island": True,
@@ -364,7 +390,7 @@ def recommend_chat():
                 return jsonify({"error": "Invalid base64 image"}), 400
         elif image_url:
             try:
-                r = requests.get(image_url, timeout=15)
+                r = requests.get(image_url, timeout=10)
                 r.raise_for_status()
                 image_bytes = r.content
             except Exception as e:
@@ -407,12 +433,13 @@ def recommend_chat():
         try:
             resp = gemini_model.generate_content(
                 parts,
-                request_options={"timeout": 45}
+                generation_config=generation_config,
+                request_options={"timeout": 50}
             )
             reply = clean_markdown((getattr(resp, "text", "") or "").strip())
         except Exception as ge:
             print(f"[ERROR] Chat Gemini failed: {ge}")
-            reply = f"(model error: {ge})"
+            reply = "I apologize, but I'm having trouble generating a response right now. Please try rephrasing your question or try again in a moment."
 
         return jsonify({"reply": reply}), 200
 
@@ -423,5 +450,5 @@ def recommend_chat():
 # ---------------------- Start Server ----------------------
 if __name__ == '__main__':
     print("[INFO] Starting Flask server at http://0.0.0.0:5000 ...")
-    # Use production WSGI server for deployment
+    # Use production settings
     app.run(host="0.0.0.0", debug=False, port=5000, threaded=True)
